@@ -78,6 +78,21 @@ def save_uploaded_file_with_db(file, save_dir):
     return "success", new_filename
 
 # --- Flask Routes ---
+
+# --- เพิ่ม Route นี้เข้าไปใน server/server_gui.py ---
+@app.route('/check_status', methods=['GET'])
+def check_status():
+    """ดึงรายการ Hash รูปภาพทั้งหมดที่เคยอัพโหลดลง SQLite แล้ว"""
+    conn = sqlite3.connect(DB_NAME)
+    cursor = conn.cursor()
+    cursor.execute('SELECT hash FROM photo_hashes')
+    rows = cursor.fetchall()
+    conn.close()
+    
+    uploaded_hashes = [row[0] for row in rows]
+    return jsonify({'uploaded_hashes': uploaded_hashes}), 200
+
+
 @app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
