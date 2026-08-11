@@ -55,9 +55,9 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // ฟังก์ชันยิงรูปส่งเข้า Python Server ใน LAN
+ // ฟังก์ชันยิงรูปส่งเข้า Python Server ใน LAN
   Future<void> _uploadImages() async {
-    final String serverIp = _ipController.text.trim();
+    String serverIp = _ipController.text.trim();
     if (serverIp.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('กรุณากรอก IP Address ของคอมพิวเตอร์')),
@@ -72,6 +72,11 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
+    // ถ้าผู้ใช้ไม่ได้พิมพ์ :port มา ให้ใส่ :5001 เป็นค่าเริ่มต้นให้อัตโนมัติ
+    if (!serverIp.contains(':')) {
+      serverIp = '$serverIp:5001';
+    }
+
     setState(() {
       _isUploading = true;
       _statusMessage = 'กำลังส่งรูปภาพ... (0/${_selectedImages.length})';
@@ -79,7 +84,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     int successCount = 0;
     int skippedCount = 0;
-    final Uri uri = Uri.parse('http://$serverIp:5000/upload');
+    final Uri uri = Uri.parse('http://$serverIp/upload');
 
     for (int i = 0; i < _selectedImages.length; i++) {
       final XFile image = _selectedImages[i];
