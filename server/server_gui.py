@@ -77,7 +77,7 @@ class PhotoServerApp(ctk.CTk):
         self.title_label = ctk.CTkLabel(self, text="Photo Receiver Server", font=ctk.CTkFont(size=20, weight="bold"))
         self.title_label.pack(pady=10)
 
-        self.status_label = ctk.CTkLabel(self, text="🟢 Server Status: Running on Port 5000", text_color="green", font=ctk.CTkFont(size=14))
+        self.status_label = ctk.CTkLabel(self, text="🟢 Server Status: Running on Port 5001", text_color="green", font=ctk.CTkFont(size=14))
         self.status_label.pack(pady=5)
 
         # Frame สำหรับเลือกโฟลเดอร์ปลายทาง
