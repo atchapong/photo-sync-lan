@@ -1,0 +1,36 @@
+# --- macOS ---
+.DS_Store
+.AppleDouble
+.LSSharedFileList
+**/.DS_Store
+
+# --- VS Code ---
+.vscode/
+
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+server/.venv/
+server/venv/
+server/ENV/
+server/build/
+server/dist/
+server/*.spec
+
+# --- Flutter / Dart ---
+app/.dart_tool/
+app/.build/
+app/build/
+app/*.element
+app/*.pub-cache
+app/*.pub
+app/ios/Pods/
+app/ios/Runner.xcworkspace/
+app/ios/Flutter/Flutter.podspec
+app/ios/Flutter/App.framework/
+app/ios/Flutter/Flutter.framework/
+app/ios/Flutter/Generated.xcconfig
+app/android/.gradle/
+app/android/app/build/
