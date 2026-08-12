@@ -1,8 +1,10 @@
 import 'dart:io';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:photo_manager/photo_manager.dart';
 import 'package:http/http.dart' as http;
-import 'dart:convert';
+import 'package:crypto/crypto.dart';
+import 'package:nsd/nsd.dart';
 
 void main() {
   runApp(const PhotoSyncApp());
@@ -32,23 +34,72 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  final TextEditingController _ipController = TextEditingController();
+  String? _serverUrl;
+  bool _isSearchingServer = false;
   
   List<AssetEntity> _allPhotos = [];
-  Set<String> _uploadedHashes = {}; // เก็บรายการ Hash รูปที่อัพโหลดแล้ว
+  Map<String, String> _photoHashCache = {};
+  Set<String> _uploadedHashes = {};
+  
   bool _isLoadingPhotos = false;
   bool _isUploading = false;
-  String _statusMessage = 'กรุณากรอก IP คอมพิวเตอร์ แล้วกด "โหลดรูปทั้งหมด"';
+  String _statusMessage = 'กำลังสแกนหา Server อัตโนมัติ (Smart Connect)...';
 
-  // 1. ดึงรูปภาพทั้งหมดจากเครื่องมือถือ
+  @override
+  void initState() {
+    super.initState();
+    _autoDiscoverServer(); // สแกนหา Server ทันทีที่เปิดแอป
+  }
+
+  // 📡 ฟังก์ชัน Smart Connect: สแกนหา Server ใน LAN อัตโนมัติ
+  Future<void> _autoDiscoverServer() async {
+    setState(() {
+      _isSearchingServer = true;
+      _statusMessage = '🔍 กำลังค้นหา คอมพิวเตอร์ ในวง Wi-Fi...';
+    });
+
+    try {
+      final discovery = await startDiscovery('_photosync._tcp');
+      discovery.addNestedListener((service, status) {
+        if (status == ServiceStatus.found && service.host != null) {
+          final host = service.host;
+          final port = service.port ?? 5001;
+          setState(() {
+            _serverUrl = 'http://$host:$port';
+            _isSearchingServer = false;
+            _statusMessage = '⚡ เชื่อมต่อคอมพิวเตอร์สำเร็จ! ($_serverUrl)';
+          });
+          stopDiscovery(discovery);
+          _loadDevicePhotos();
+        }
+      });
+
+      // ถ้าค้นหาเกิน 5 วินาทีแล้วไม่พบ
+      Future.delayed(const Duration(seconds: 5), () {
+        if (_serverUrl == null) {
+          stopDiscovery(discovery);
+          setState(() {
+            _isSearchingServer = false;
+            _statusMessage = '❌ ไม่พบ Server กรุณาเปิดโปรแกรมบนคอมพิวเตอร์';
+          });
+        }
+      });
+    } catch (e) {
+      setState(() {
+        _isSearchingServer = false;
+        _statusMessage = 'ค้นหา Server ล้มเหลว: $e';
+      });
+    }
+  }
+
+  // 1. ดึงรูปภาพทั้งหมดในเครื่อง
   Future<void> _loadDevicePhotos() async {
     setState(() {
       _isLoadingPhotos = true;
-      _statusMessage = 'กำลังขอสิทธิ์เข้าถึงคลังรูปภาพ...';
     });
 
     final PermissionState ps = await PhotoManager.requestPermissionExtend();
-    if (!ps.isAuth) {
+    if (!ps.isAuth && !ps.hasAccess) {
       setState(() {
         _isLoadingPhotos = false;
         _statusMessage = 'ไม่ได้รับสิทธิ์เข้าถึงรูปภาพ';
@@ -56,24 +107,16 @@ class _HomeScreenState extends State<HomeScreen> {
       return;
     }
 
-    setState(() => _statusMessage = 'กำลังโหลดรูปภาพจากมือถือ...');
-
-    // ดึงอัลบั้มรูปทั้งหมด
-    List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(
-      type: RequestType.image,
-    );
+    List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(type: RequestType.image);
 
     if (albums.isNotEmpty) {
-      // ดึงรูปภาพ 100 รูปแรก (หรือปรับตามต้องการ)
-      List<AssetEntity> photos = await albums[0].getAssetListRange(start: 0, end: 300);
+      List<AssetEntity> photos = await albums[0].getAssetListRange(start: 0, end: 200);
       setState(() {
         _allPhotos = photos;
         _isLoadingPhotos = false;
-        _statusMessage = 'พบรูปภาพ ${_allPhotos.length} รูปในมือถือ';
       });
 
-      // ถ้ากรอก IP ไว้แล้ว ให้เช็กสถานะการอัพโหลดทันที
-      if (_ipController.text.isNotEmpty) {
+      if (_serverUrl != null) {
         _checkUploadedStatus();
       }
     } else {
@@ -84,20 +127,17 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // 2. ส่งรายการภาพไปถาม Server ว่ารูปไหนเคยอัพโหลดแล้วบ้าง
+  // 2. ดึงรายการ Hash จาก Server
   Future<void> _checkUploadedStatus() async {
-    String serverIp = _ipController.text.trim();
-    if (serverIp.isEmpty) return;
-    if (!serverIp.contains(':')) serverIp = '$serverIp:5001';
+    if (_serverUrl == null) return;
 
     try {
-      // ดึง MD5 หรือตรวจสอบรายการกับ Server
-      final response = await http.get(Uri.parse('http://$serverIp/check_status'));
+      final response = await http.get(Uri.parse('$_serverUrl/check_status'));
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         setState(() {
           _uploadedHashes = Set<String>.from(data['uploaded_hashes'] ?? []);
-          _statusMessage = 'เช็กสถานะรูปภาพกับ Server เรียบร้อย';
+          _statusMessage = '🟢 พร้อมซิงค์! ตรวจพบรูปซิงค์แล้ว ${_uploadedHashes.length} รูป';
         });
       }
     } catch (e) {
@@ -105,25 +145,31 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  // 3. ฟังก์ชันอัพโหลดรูปภาพที่ยังไม่ได้อัพ
-  Future<void> _uploadNewPhotos() async {
-    String serverIp = _ipController.text.trim();
-    if (serverIp.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('กรุณากรอก IP Address')),
-      );
+  Future<String?> _getHashForPhoto(AssetEntity photo) async {
+    if (_photoHashCache.containsKey(photo.id)) return _photoHashCache[photo.id];
+    final File? file = await photo.file;
+    if (file != null) {
+      final bytes = await file.readAsBytes();
+      final hash = md5.convert(bytes).toString();
+      _photoHashCache[photo.id] = hash;
+      return hash;
+    }
+    return null;
+  }
+
+  // 3. ฟังก์ชันอัพโหลดรูป
+  Future<void> _uploadAllPhotos() async {
+    if (_serverUrl == null) {
+      _autoDiscoverServer();
       return;
     }
 
-    if (!serverIp.contains(':')) serverIp = '$serverIp:5001';
-
     setState(() {
       _isUploading = true;
-      _statusMessage = 'กำลังเตรียมส่งรูปภาพ...';
+      _statusMessage = 'กำลังเริ่มซิงค์รูปภาพ...';
     });
 
-    int successCount = 0;
-    final Uri uri = Uri.parse('http://$serverIp/upload');
+    final Uri uri = Uri.parse('$_serverUrl/upload');
 
     for (int i = 0; i < _allPhotos.length; i++) {
       final AssetEntity photo = _allPhotos[i];
@@ -138,11 +184,14 @@ class _HomeScreenState extends State<HomeScreen> {
           var response = await http.Response.fromStream(streamedResponse);
 
           if (response.statusCode == 200) {
-            successCount++;
+            final hash = await _getHashForPhoto(photo);
+            if (hash != null) {
+              setState(() => _uploadedHashes.add(hash));
+            }
           }
 
           setState(() {
-            _statusMessage = 'กำลังส่งรูป... (${i + 1}/${_allPhotos.length})';
+            _statusMessage = 'กำลังซิงค์... (${i + 1}/${_allPhotos.length})';
           });
         } catch (e) {
           print('Upload error: $e');
@@ -150,12 +199,10 @@ class _HomeScreenState extends State<HomeScreen> {
       }
     }
 
-    // อัปเดตสถานะติ๊กถูกใหม่หลังจากส่งเสร็จ
     await _checkUploadedStatus();
-
     setState(() {
       _isUploading = false;
-      _statusMessage = 'ซิงค์ข้อมูลเสร็จสิ้น!';
+      _statusMessage = '✨ ซิงค์รูปภาพเรียบร้อยแล้ว!';
     });
   }
 
@@ -163,13 +210,13 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('📸 Photo Sync (Google Photos Style)'),
+        title: const Text('📸 Photo Sync (Smart Connect)'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
         actions: [
           IconButton(
-            icon: const Icon(Icons.refresh),
-            onPressed: _loadDevicePhotos,
-            tooltip: 'โหลดรูปภาพใหม่',
+            icon: const Icon(Icons.search),
+            onPressed: _autoDiscoverServer,
+            tooltip: 'ค้นหา Server ใหม่',
           )
         ],
       ),
@@ -177,48 +224,40 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: const EdgeInsets.all(12.0),
         child: Column(
           children: [
-            // ช่องกรอก IP Address
-            Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _ipController,
-                    decoration: const InputDecoration(
-                      labelText: 'IP Address คอมพิวเตอร์',
-                      border: OutlineInputBorder(),
-                      contentPadding: EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                    ),
-                    keyboardType: TextInputType.number,
+            // Status Header
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: _serverUrl != null ? Colors.green.shade50 : Colors.orange.shade50,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    _serverUrl != null ? Icons.wifi : Icons.wifi_off,
+                    color: _serverUrl != null ? Colors.green : Colors.orange,
                   ),
-                ),
-                const SizedBox(width: 8),
-                ElevatedButton(
-                  onPressed: _checkUploadedStatus,
-                  child: const Text('เชื่อมต่อ'),
-                ),
-              ],
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      _statusMessage,
+                      style: TextStyle(
+                        fontWeight: FontWeight.bold,
+                        color: _serverUrl != null ? Colors.green.shade900 : Colors.orange.shade900,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
 
-            // ข้อความสถานะ
-            Text(
-              _statusMessage,
-              style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.blue),
-            ),
-            const SizedBox(height: 8),
-
-            // แสดง Gallery พร้อมไอคอนติ๊กถูก
+            // Gallery Grid
             Expanded(
-              child: _isLoadingPhotos
+              child: _isLoadingPhotos || _isSearchingServer
                   ? const Center(child: CircularProgressIndicator())
                   : _allPhotos.isEmpty
-                      ? Center(
-                          child: ElevatedButton.icon(
-                            onPressed: _loadDevicePhotos,
-                            icon: const Icon(Icons.photo),
-                            label: const Text('ดึงรูปภาพจากเครื่อง'),
-                          ),
-                        )
+                      ? const Center(child: Text('ไม่พบรูปภาพในมือถือ'))
                       : GridView.builder(
                           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                             crossAxisCount: 3,
@@ -232,31 +271,30 @@ class _HomeScreenState extends State<HomeScreen> {
                               future: photo.file,
                               builder: (context, snapshot) {
                                 if (snapshot.hasData && snapshot.data != null) {
-                                  // เช็กดูว่ารูปนี้อัพแล้วหรือยัง (เช็กผ่านชื่อไฟล์/ID)
-                                  bool isUploaded = _uploadedHashes.contains(photo.id);
+                                  return FutureBuilder<String?>(
+                                    future: _getHashForPhoto(photo),
+                                    builder: (context, hashSnapshot) {
+                                      final hash = hashSnapshot.data;
+                                      final bool isUploaded = hash != null && _uploadedHashes.contains(hash);
 
-                                  return Stack(
-                                    fit: StackFit.expand,
-                                    children: [
-                                      Image.file(
-                                        snapshot.data!,
-                                        fit: BoxFit.cover,
-                                      ),
-                                      // 🟢 สัญลักษณ์ติ๊กถูกเขียว ถ้าอัพแล้ว
-                                      if (isUploaded)
-                                        Container(
-                                          color: Colors.black26,
-                                          child: const Align(
-                                            alignment: Alignment.topRight,
-                                            padding: EdgeInsets.all(4),
-                                            child: Icon(
-                                              Icons.check_circle,
-                                              color: Colors.greenAccent,
-                                              size: 28,
+                                      return Stack(
+                                        fit: StackFit.expand,
+                                        children: [
+                                          Image.file(snapshot.data!, fit: BoxFit.cover),
+                                          if (isUploaded)
+                                            Container(
+                                              color: Colors.black12,
+                                              child: const Padding(
+                                                padding: EdgeInsets.all(4.0),
+                                                child: Align(
+                                                  alignment: Alignment.topRight,
+                                                  child: Icon(Icons.check_circle, color: Colors.greenAccent, size: 26),
+                                                ),
+                                              ),
                                             ),
-                                          ),
-                                        ),
-                                    ],
+                                        ],
+                                      );
+                                    },
                                   );
                                 }
                                 return Container(color: Colors.grey.shade300);
@@ -265,21 +303,17 @@ class _HomeScreenState extends State<HomeScreen> {
                           },
                         ),
             ),
-            const SizedBox(height: 8),
+            const SizedBox(height: 12),
 
-            // ปุ่มกด Sync รูปภาพ
+            // Sync Button
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
-                onPressed: _isUploading ? null : _uploadNewPhotos,
+                onPressed: (_isUploading || _serverUrl == null) ? null : _uploadAllPhotos,
                 icon: _isUploading
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                      )
+                    ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
                     : const Icon(Icons.cloud_upload),
-                label: Text(_isUploading ? 'กำลังส่งรูปภาพ...' : 'เริ่มอัพโหลดซิงค์ทั้งหมด'),
+                label: Text(_isUploading ? 'กำลังซิงค์...' : 'เริ่มซิงค์รูปภาพทั้งหมด'),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.green,
                   foregroundColor: Colors.white,

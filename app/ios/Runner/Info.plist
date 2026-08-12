@@ -58,5 +58,8 @@
 	</dict>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>ขอสิทธิ์เชื่อมต่อ Wi-Fi ในบ้านเพื่อส่งรูปภาพไปยังคอมพิวเตอร์</string>
+
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>ขอสิทธิ์เข้าถึงคลังรูปภาพเพื่อตรวจสอบและส่งรูปไปยังคอมพิวเตอร์</string>
 </dict>
 </plist>
