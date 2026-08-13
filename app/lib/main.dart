@@ -51,7 +51,7 @@ class _HomeScreenState extends State<HomeScreen> {
     _autoDiscoverServer(); // สแกนหา Server ทันทีที่เปิดแอป
   }
 
-  // 📡 ฟังก์ชัน Smart Connect: สแกนหา Server ใน LAN อัตโนมัติ
+// 📡 ฟังก์ชัน Smart Connect: สแกนหา Server ใน LAN อัตโนมัติ (อัปเดต API nsd เวอร์ชันใหม่)
   Future<void> _autoDiscoverServer() async {
     setState(() {
       _isSearchingServer = true;
@@ -60,21 +60,28 @@ class _HomeScreenState extends State<HomeScreen> {
 
     try {
       final discovery = await startDiscovery('_photosync._tcp');
-      discovery.addNestedListener((service, status) {
-        if (status == ServiceStatus.found && service.host != null) {
-          final host = service.host;
-          final port = service.port ?? 5001;
-          setState(() {
-            _serverUrl = 'http://$host:$port';
-            _isSearchingServer = false;
-            _statusMessage = '⚡ เชื่อมต่อคอมพิวเตอร์สำเร็จ! ($_serverUrl)';
-          });
-          stopDiscovery(discovery);
-          _loadDevicePhotos();
+      
+      // ✅ ใช้ addListener แทน addNestedListener
+      discovery.addListener(() {
+        for (final service in discovery.services) {
+          if (service.host != null) {
+            final host = service.host;
+            final port = service.port ?? 5001;
+            
+            setState(() {
+              _serverUrl = 'http://$host:$port';
+              _isSearchingServer = false;
+              _statusMessage = '⚡ เชื่อมต่อคอมพิวเตอร์สำเร็จ! ($_serverUrl)';
+            });
+            
+            stopDiscovery(discovery);
+            _loadDevicePhotos();
+            break;
+          }
         }
       });
 
-      // ถ้าค้นหาเกิน 5 วินาทีแล้วไม่พบ
+      // ถ้าค้นหาเกิน 5 วินาทีแล้วไม่พบ ให้หยุดการสแกน
       Future.delayed(const Duration(seconds: 5), () {
         if (_serverUrl == null) {
           stopDiscovery(discovery);
